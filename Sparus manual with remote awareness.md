@@ -50,6 +50,10 @@ If that happens run `sudo service loop500 restart` inside the jetson.
 
 Note: Before interacting with the voyis system it is important to turn on the architecture, as otherwise the time signal is not sent
 
+# Remote awareness
+
+## Code
+When downloading code, make sure to also download libbpg in ./external/libbpg (from https://github.com/miquelmassot/libbpg/)
 
 ## Running remote awareness
 There is an alias in ~/.bashrc:
@@ -137,4 +141,133 @@ Options:
   -h, --help                      Show this message and exit.
 ```
 
-The 
+
+Docker command for remote_awareness:
+`docker run --rm -it --ipc=private -e USER=$(whoami) -h $HOSTNAME --user $(id -u):$(id -g) --volume $(pwd):/data -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro --name=georef_$(whoami)_$(date +%Y%m%d_%H%M%S) --net=host -v $HOME/.cache/matplotlib:/opt/.config/matplotlib --shm-size=16g remote_awareness_image`
+
+
+`remote_awareness pipeline`  runs
+
+```
+gerenate_metadata_csv
+correct _images
+sampling
+representative_images
+```
+
+
+### Generate metadata CSV
+```
+Usage: remote_awareness generate_metadata_csv [OPTIONS]
+
+Options:
+  -c, --config FILE       Path to the YAML configuration file
+  -i, --images DIRECTORY  Path to the images
+  -b, --bagfiles FILE     Path to the navigation bagfile
+  -o, --output FILE       Output path to the metadata CSV file  [default:
+                          metadata.csv]
+  -h, --help              Show this message and exit.
+```
+
+Mount data folder on Voyis PC:
+`mkdir -p ~/data/voyis_data`
+
+`sshfs -o allow_other,IdentityFile=/home/sparus/.ssh/id_rsa tguser@192.168.1.26:/data/data ~/data/voyis_data`
+
+Below does not work unless we modif dockerfile to provide /data_voyis folder
+`docker run --rm -it --ipc=private -e USER=$(whoami) -h $HOSTNAME --user $(id -u):$(id -g) -v $(pwd):/data -v ~/data/voyis_data:/data_voyis -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro --name=georef_$(whoami)_$(date +%Y%m%d_%H%M%S) --net=host -v $HOME/.cache/matplotlib:/opt/.config/matplotlib --shm-size=16g ghcr.io/ocean-perception/remote_awareness:latest`
+Workaround: run command from / (no need to modify docker alias)
+
+Not sure if we need a config file. A default config file is in the docker image at /opt/remote_awareness/config/smarty200.yaml
+(there is another one in ../src/configuration/remote_awareness.yaml but from running the code I think it picks smarty200.yaml by default)
+
+Bag files are on sparus ~/bags/
+home/user/data/voyis_data/20241105_162702_smarty200/stills/processed/
+
+The metadata file points to the raw images. However we can use `sed` to modify the paths to point to the processed images.
+
+#### Example on copy on laptop
+```
+cd ~/Documents
+
+docker run --rm -it --ipc=private -e USER=$(whoami) -h $HOSTNAME --user $(id -u):$(id -g) -v $(pwd):/data -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro --name=georef_$(whoami)_$(date +%Y%m%d_%H%M%S) --net=host -v $HOME/.cache/matplotlib:/opt/.config/matplotlib --shm-size=16g ghcr.io/ocean-perception/remote_awareness:latest \
+remote_awareness generate_metadata_csv \
+-c /opt/remote_awareness/config/smarty200.yaml \
+-i plymouth2024/raw/20241105_151333_smarty200/images/20241105_151333_smarty200/ \
+-b plymouth2024/raw/20241105_151333_smarty200/nav/bags/sparus2_2024-11-05-15-15-50_0.bag \
+-o metadata.csv
+
+sed -i 's/raw_/processed_/g' metadata.csv && \
+sed -i 's/stills\/raw/stills\/processed/g' metadata.csv && \
+sed -i 's/.tif/.jpg/g' metadata.csv
+```
+
+
+### Sampling
+
+```
+Usage: remote_awareness sampling [OPTIONS]
+
+Options:
+  -c, --config FILE             Path to the YAML configuration file
+  --csv FILE                    Path to the metadata CSV file
+  --number-of-images INTEGER    Number of images to sample from the dataset
+                                [default: 1500]
+  --interlace / --no-interlace  Interlace the image list (false for sorted
+                                images).   [default: no-interlace]
+  --output-path PATH            Output folder path
+```
+
+#### Example
+```
+cd ~/Documents
+
+docker run --rm -it --ipc=private -e USER=$(whoami) -h $HOSTNAME --user $(id -u):$(id -g) -v $(pwd):/data -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro --name=georef_$(whoami)_$(date +%Y%m%d_%H%M%S) --net=host -v $HOME/.cache/matplotlib:/opt/.config/matplotlib --shm-size=16g ghcr.io/ocean-perception/remote_awareness:latest \
+remote_awareness sampling \
+-c /opt/remote_awareness/config/smarty200.yaml \
+--csv metadata.csv \
+--output-path sampled.csv \
+--number-of-images 900
+```
+Note: number-of-images is not documented. It is set to 1500 by default. If the dataset has fewer images it crashes (I blieve; with the version of the code on Smarty).
+
+
+### Inference
+Note: This is not run in the pipeline. In the pipeline representative_images is run, which also runs inference. I believe it will have a different result every time it is run, so do not mix `inference` results and `representative_images` results (or results from two different runs of `inference` (or `representative_images`), for that matter)
+#### Example
+```
+cd ~/Documents
+docker run --rm -it --ipc=private -e USER=$(whoami) -h $HOSTNAME --user $(id -u):$(id -g) -v $(pwd):/data -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro --name=georef_$(whoami)_$(date +%Y%m%d_%H%M%S) --net=host -v $HOME/.cache/matplotlib:/opt/.config/matplotlib --shm-size=16g ghcr.io/ocean-perception/remote_awareness:latest \
+remote_awareness inference \
+-c /opt/remote_awareness/config/smarty200.yaml \
+--metadata-csv sampled.csv \
+--model-path /opt/remote_awareness/config/ae_model.pt \
+--output-directory inference_output
+```
+
+### Representative images
+
+```
+Usage: remote_awareness representative_images [OPTIONS]
+
+Options:
+  -c, --config FILE               Path to the YAML configuration file
+  --output-directory DIRECTORY    Path to the output directory
+  --num-representative-images INTEGER
+                                  Number of representative images to use
+                                  [default: 16]
+  --num-representative-clusters INTEGER
+                                  Number of representative clusters to use
+                                  [default: 4]
+```
+
+#### Example
+```
+cd ~/Documents
+docker run --rm -it --ipc=private -e USER=$(whoami) -h $HOSTNAME --user $(id -u):$(id -g) -v $(pwd):/data -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro --name=georef_$(whoami)_$(date +%Y%m%d_%H%M%S) --net=host -v $HOME/.cache/matplotlib:/opt/.config/matplotlib --shm-size=16g ghcr.io/ocean-perception/remote_awareness:latest \
+remote_awareness representative_images \
+-c /opt/remote_awareness/config/smarty200.yaml \
+--output-directory inference_output
+```
+
+Problem: it crashes when it does not find the column "imagenumber" in inference_output/latents_float64.csv. But this columnn was not originally written when the file is written in inference.py. This has now been modified in the "develop_adrian" branch.
